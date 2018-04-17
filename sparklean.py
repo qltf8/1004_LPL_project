@@ -17,20 +17,24 @@ class cleaner():
             save_dir: string, path for saving different versions of data
 
         '''
+	#initialize spark context and sparkSQL
         self.sc = pyspark.SparkContext()
         self.ss = SQLContext(self.sc)
         try:
+	#read data
             self.data=self.ss.read.csv(data)
         except Exception as e:
             self.sc.stop()
             print(e)
             raise ValueError("Can't read file, sparkcontext stopped.")
+	#initialize output and checkpoint directory
         self.out='Spark-lean default output'
         if not os.path.isdir(save_dir):
             raise ValueError('Directory does not exist! Create it first!')
         self.save_dir=save_dir
 
     def initialize(self):
+	#print data schema
         self.data.printSchema()
         return
     def stop_context(self):
@@ -92,13 +96,14 @@ class cleaner():
         null_targets=[]
         if columns=='DEFAULT':
             columns=self.data.columns
-
+	#Do null filtering in every column
         for col in columns:
             n=self.data.where(self.data[col].isNull()).count()
             if n >0:
                 message='column '+col+' has '+str(n)+' null values!'
                 output.append(message)
                 null_targets.append(col)
+	#Do keywords filtering in every column
         for naword in keywords:
             for col in self.data.columns:
                 n=self.data.filter(self.data[col]==naword).count()
@@ -109,7 +114,9 @@ class cleaner():
                         targets[col].append(naword)
                     else:
                         targets[col]=[naword]
+	#save suspicious column and null value columns in the output
         self.out=(null_targets,targets)
+	#Interactive part
         for i in output:
             print(i)
         for i in range(5):
@@ -129,9 +136,7 @@ class cleaner():
             mode=int(input('Input(number):'))
         except ValueError:
             print ("Not a number")
-        # if mode==10:
-        #     for col,naword in targets.items():
-        #         c.replace(col,naword)
+
         if mode==1:
             for col in null_targets:
                 self.data=self.data.where(self.data[col].isNotNull())
@@ -191,6 +196,7 @@ class cleaner():
             org_value: original value of the target instance
             new_value: replaced value
         '''
+#check input type
         if isinstance(col_name, str):
             if col_name in self.data.columns:
                 org_value_type = type(org_value)
@@ -221,6 +227,7 @@ class cleaner():
             new_value: replaced value
 
         '''
+#check input type
         if isinstance(col_name, str):
             if "index" in self.data.columns:
                 if isinstance(index, int):
@@ -244,7 +251,7 @@ class cleaner():
             pass
         else:
             return "DataFrame dosen't have index"
-
+	
         df.createOrReplaceTempView("df")
         num_before_remove = df.count()
         if isinstance(index,tuple):
@@ -252,8 +259,10 @@ class cleaner():
         elif isinstance(index,list):
             if len(index) == 0:
                 return "Empty list"
+            #one element list input
             elif len(index) == 1:
                 index = index[0]
+                
                 df = self.ss.sql("select * from df where index != '{}'".format(index))
                 num_after_remove = df.count()
                 self.data = df
@@ -261,6 +270,7 @@ class cleaner():
                 return
             else:
                 index = tuple(index)
+        #single input
         elif isinstance(index, int) or isinstance(index,str):
             df = self.ss.sql("select * from df where index != '{}'".format(index))
             num_after_remove = df.count()
@@ -269,7 +279,7 @@ class cleaner():
             return
         else:
             return "Wrong index type, only list, tuple, str, or int is accepted, you input type is {}".format(type(index))
-
+	#remove using sql
         df = self.ss.sql("select * from df where index not in {}".format(index))
         num_after_remove = df.count()
         self.data = df
@@ -285,6 +295,7 @@ class cleaner():
         values: number/string
         '''
         df = self.data
+	#check input type
         if isinstance(column,str):
             pass
         else:
@@ -299,7 +310,9 @@ class cleaner():
             return 'The value mush be str or number, your input is'+str(type(values))
         df.createOrReplaceTempView("df")
         num_before_remove = df.count()
-        the_number_of_same_value = self.ss.sql("select * from df where  {} = '{}'".format(column,values)).count()
+	#check if the target value exists        
+	the_number_of_same_value = self.ss.sql("select * from df where  {} = '{}'".format(column,values)).count()
+	#remove target rows
         if the_number_of_same_value > 0:
             df = self.ss.sql("select * from df where  {} != '{}'".format(column,values))
         num_after_remove = df.count()
@@ -381,9 +394,11 @@ class cleaner():
             first_set = set()
             num_of_row = df.count()
             num_first_try = 10
+	    #check first 10 rows to see if they are them same, this trick saves time for completedly check each column
             temp_df = self.ss.sql("select {} from df limit 10".format(col)).take(num_first_try)
             for i in range(num_first_try):
                 first_set.add(temp_df[i][col])
+            #Compeletedly check a column
             if len(first_set) == 1:
                 target_value = first_set.pop()
                 num_of_row_with_same_value = self.ss.sql("select * from df where {} = '{}'".format(col,target_value)).count()
