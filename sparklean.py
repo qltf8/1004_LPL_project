@@ -246,6 +246,9 @@ class cleaner():
         self.data = data
         return
     def remove_by_index(self,index):
+        '''
+        Remove rows by index.
+        '''
         df = self.data
         if 'index' in df.columns:
             pass
@@ -290,6 +293,7 @@ class cleaner():
 
     def remove_by_column_and_value(self,column,values):
         '''
+	Remove rows by filtering values.
         df : dataframe
         column: str
         values: number/string
@@ -320,6 +324,9 @@ class cleaner():
         print('The number of rows removed : {}'.format(num_before_remove-num_after_remove))
         return
     def dropDuplicateColumn(self):
+        '''
+        Detect and drop duplicated columns.
+        '''
         df = self.data
         i = 0
         df.createOrReplaceTempView("df")
@@ -387,6 +394,9 @@ class cleaner():
         self.data =df
         return
     def dropColumnWithAllTheSameValues(self):
+        '''
+        Detect and drop useless features.
+        '''
         df = self.data
         df.createOrReplaceTempView("df")
         for col in df.columns:
