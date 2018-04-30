@@ -5,10 +5,19 @@ import os
 import shutil
 from pyspark.sql import SQLContext
 from pyspark.sql.functions import *
-
+from pyspark.ml.feature import NGram
+from pyspark.ml.feature import MinHashLSH
+from pyspark.ml.linalg import Vectors
+from pyspark.sql.functions import col
+from pyspark.ml.feature import CountVectorizer
+import string
+from pyspark.ml.linalg import Vectors
+from pyspark.sql.types import DoubleType
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.feature import StandardScaler
 
 class cleaner():
-    def __init__(self,data,save_dir):
+    def __init__(self,data,save_dir,sparkcontext=None):
         '''
         Constructor
 
@@ -17,24 +26,23 @@ class cleaner():
             save_dir: string, path for saving different versions of data
 
         '''
-	#initialize spark context and sparkSQL
-        self.sc = pyspark.SparkContext()
+        if sparkcontext != None:
+            self.sc = sparkcontext
+        else:
+            self.sc = pyspark.SparkContext()
         self.ss = SQLContext(self.sc)
         try:
-	#read data
             self.data=self.ss.read.csv(data)
         except Exception as e:
             self.sc.stop()
             print(e)
             raise ValueError("Can't read file, sparkcontext stopped.")
-	#initialize output and checkpoint directory
         self.out='Spark-lean default output'
         if not os.path.isdir(save_dir):
             raise ValueError('Directory does not exist! Create it first!')
         self.save_dir=save_dir
 
     def initialize(self):
-	#print data schema
         self.data.printSchema()
         return
     def stop_context(self):
@@ -96,14 +104,13 @@ class cleaner():
         null_targets=[]
         if columns=='DEFAULT':
             columns=self.data.columns
-	#Do null filtering in every column
+
         for col in columns:
             n=self.data.where(self.data[col].isNull()).count()
             if n >0:
                 message='column '+col+' has '+str(n)+' null values!'
                 output.append(message)
                 null_targets.append(col)
-	#Do keywords filtering in every column
         for naword in keywords:
             for col in self.data.columns:
                 n=self.data.filter(self.data[col]==naword).count()
@@ -114,9 +121,7 @@ class cleaner():
                         targets[col].append(naword)
                     else:
                         targets[col]=[naword]
-	#save suspicious column and null value columns in the output
         self.out=(null_targets,targets)
-	#Interactive part
         for i in output:
             print(i)
         for i in range(5):
@@ -136,7 +141,9 @@ class cleaner():
             mode=int(input('Input(number):'))
         except ValueError:
             print ("Not a number")
-
+        # if mode==10:
+        #     for col,naword in targets.items():
+        #         c.replace(col,naword)
         if mode==1:
             for col in null_targets:
                 self.data=self.data.where(self.data[col].isNotNull())
@@ -196,7 +203,6 @@ class cleaner():
             org_value: original value of the target instance
             new_value: replaced value
         '''
-#check input type
         if isinstance(col_name, str):
             if col_name in self.data.columns:
                 org_value_type = type(org_value)
@@ -227,7 +233,6 @@ class cleaner():
             new_value: replaced value
 
         '''
-#check input type
         if isinstance(col_name, str):
             if "index" in self.data.columns:
                 if isinstance(index, int):
@@ -246,15 +251,12 @@ class cleaner():
         self.data = data
         return
     def remove_by_index(self,index):
-        '''
-        Remove rows by index.
-        '''
         df = self.data
         if 'index' in df.columns:
             pass
         else:
             return "DataFrame dosen't have index"
-	
+
         df.createOrReplaceTempView("df")
         num_before_remove = df.count()
         if isinstance(index,tuple):
@@ -262,10 +264,8 @@ class cleaner():
         elif isinstance(index,list):
             if len(index) == 0:
                 return "Empty list"
-            #one element list input
             elif len(index) == 1:
                 index = index[0]
-                
                 df = self.ss.sql("select * from df where index != '{}'".format(index))
                 num_after_remove = df.count()
                 self.data = df
@@ -273,7 +273,6 @@ class cleaner():
                 return
             else:
                 index = tuple(index)
-        #single input
         elif isinstance(index, int) or isinstance(index,str):
             df = self.ss.sql("select * from df where index != '{}'".format(index))
             num_after_remove = df.count()
@@ -282,7 +281,7 @@ class cleaner():
             return
         else:
             return "Wrong index type, only list, tuple, str, or int is accepted, you input type is {}".format(type(index))
-	#remove using sql
+
         df = self.ss.sql("select * from df where index not in {}".format(index))
         num_after_remove = df.count()
         self.data = df
@@ -293,13 +292,11 @@ class cleaner():
 
     def remove_by_column_and_value(self,column,values):
         '''
-	Remove rows by filtering values.
         df : dataframe
         column: str
         values: number/string
         '''
         df = self.data
-	#check input type
         if isinstance(column,str):
             pass
         else:
@@ -314,9 +311,7 @@ class cleaner():
             return 'The value mush be str or number, your input is'+str(type(values))
         df.createOrReplaceTempView("df")
         num_before_remove = df.count()
-	#check if the target value exists        
-	the_number_of_same_value = self.ss.sql("select * from df where  {} = '{}'".format(column,values)).count()
-	#remove target rows
+        the_number_of_same_value = self.ss.sql("select * from df where  {} = '{}'".format(column,values)).count()
         if the_number_of_same_value > 0:
             df = self.ss.sql("select * from df where  {} != '{}'".format(column,values))
         num_after_remove = df.count()
@@ -324,9 +319,6 @@ class cleaner():
         print('The number of rows removed : {}'.format(num_before_remove-num_after_remove))
         return
     def dropDuplicateColumn(self):
-        '''
-        Detect and drop duplicated columns.
-        '''
         df = self.data
         i = 0
         df.createOrReplaceTempView("df")
@@ -394,9 +386,6 @@ class cleaner():
         self.data =df
         return
     def dropColumnWithAllTheSameValues(self):
-        '''
-        Detect and drop useless features.
-        '''
         df = self.data
         df.createOrReplaceTempView("df")
         for col in df.columns:
@@ -404,11 +393,9 @@ class cleaner():
             first_set = set()
             num_of_row = df.count()
             num_first_try = 10
-	    #check first 10 rows to see if they are them same, this trick saves time for completedly check each column
             temp_df = self.ss.sql("select {} from df limit 10".format(col)).take(num_first_try)
             for i in range(num_first_try):
                 first_set.add(temp_df[i][col])
-            #Compeletedly check a column
             if len(first_set) == 1:
                 target_value = first_set.pop()
                 num_of_row_with_same_value = self.ss.sql("select * from df where {} = '{}'".format(col,target_value)).count()
@@ -429,3 +416,388 @@ class cleaner():
                 #print('not same')
         self.data =df
         return
+
+    def get_similar_word(self, column, text, n_words=10, n_hash=5,verbose=True):
+
+        rdd = self.data.rdd
+        rdd=rdd.filter(lambda row:row[column] != None)
+        rdd=rdd.filter(lambda row:row[column] != "" )
+        rdd=rdd.filter(lambda row:len(row[column]) >1)
+        cdf=self.ss.createDataFrame(rdd.map(lambda row:(row[column] if row[column] !=None else " ",list(row[column].lower()) if row[column] !=None else [" "])))
+
+        ngram = NGram(n=2, inputCol="_2", outputCol="ngrams")
+        if verbose:
+            print("Counting Ngram...")
+        ngramDataFrame = ngram.transform(cdf)
+        if verbose:
+            print("Vectorizing...")
+        # fit a CountVectorizerModel from the corpus.
+        cv = CountVectorizer(inputCol="ngrams", outputCol="features", vocabSize=3000, minDF=0)
+
+        cv_model = cv.fit(ngramDataFrame)
+
+        result = cv_model.transform(ngramDataFrame)
+
+        mh = MinHashLSH(inputCol="features", outputCol="hashes", numHashTables=n_hash)
+        if verbose:
+            print("Min Hashing...")
+        model = mh.fit(result)
+
+        input_text=text
+        input_df = [{'text':input_text,'characters': list(input_text)}]
+        input_df=self.ss.createDataFrame(input_df)
+
+        ngram = NGram(n=2, inputCol="characters", outputCol="ngrams")
+        input_df= ngram.transform(input_df)
+
+        key= cv_model.transform(input_df).first()['features']
+        print(key)
+        print(key.toArray().sum())
+        self.out=key
+
+        if verbose:
+            print("Finding nearest neighbors...")
+
+        NNs=model.approxNearestNeighbors(result, key, n_words)
+        NNs.show()
+        #self.out=NNs.select('_1').distinct()
+        return
+
+    def clean_strings_removing(self, target_col,rename_to='',punc=True,number=True,others='',verbose=True):
+
+        new_name='nn'
+        bad_charac=punc*'!."#$%&\()*+,-/:;<=>?@[\\]^_`{|}~'+number*'1234567890'+others
+        if verbose:
+            print("Remove any character contained in the set below:")
+            print(bad_charac)
+        translator = str.maketrans('', '',bad_charac)
+        rdd = self.data.rdd
+        rdd=rdd.filter(lambda row:row[target_col] != None)
+        cleaned=self.ss.createDataFrame(rdd.map(lambda row:(row[target_col],row[target_col].translate(translator),)),
+                                   [target_col,new_name])
+        if verbose:
+            print("original column v.s. cleaned")
+            cleaned.show(10)
+        self.data=self.data.join(cleaned, self.data[target_col] == cleaned[target_col])
+
+        self.data=self.data.drop(target_col)
+        self.data=self.data.drop(target_col)
+
+        if rename_to != '':
+            names=[]
+            for c in self.data.columns:
+                if c==new_name:
+                    names.append(rename_to)
+                else:
+                    names.append(c)
+        else:
+            names=[]
+            for c in self.data.columns:
+                if c==new_name:
+                    names.append(target_col)
+                else:
+                    names.append(c)
+        self.data=self.data.toDF(*names)
+        if verbose:
+            print("Final dataframe: (orders could be different)")
+            self.data.show(10)
+        return
+
+    def clean_strings_keeping(self, target_col,rename_to='',char=True,number=True,punc=True,space=True,verbose=True):
+        new_name='cleaned'
+
+        SafeSet=char*string.ascii_letters+string.punctuation*punc+string.digits*number+space*' '
+
+        def isOK(c,safeset=SafeSet):
+            return (c in safeset)
+
+        rdd = self.data.rdd
+        rdd=rdd.filter(lambda row:row[target_col] != None)
+        cleaned=self.ss.createDataFrame(rdd.map(lambda row:(row[target_col],''.join(e for e in row[target_col] if isOK(e)),)),
+                                   [target_col,new_name])
+        if verbose:
+            print("original column v.s. cleaned")
+            cleaned.show(10)
+        self.data=self.data.join(cleaned, self.data[target_col] == cleaned[target_col])
+        self.data=self.data.drop(target_col)
+        self.data=self.data.drop(target_col)
+        if rename_to != '':
+            names=[]
+            for c in self.data.columns:
+                if c==new_name:
+                    names.append(rename_to)
+                else:
+                    names.append(c)
+        else:
+            names=[]
+            for c in self.data.columns:
+                if c==new_name:
+                    names.append(target_col)
+                else:
+                    names.append(c)
+        self.data=self.data.toDF(*names)
+        if verbose:
+            print("Final dataframe: (orders could be different)")
+            self.data.show(10)
+            print("Similar names are stored in self.out!")
+        return
+
+
+
+
+    def to_double(self, col_name):
+        '''
+        cast a column to float type
+
+        Args:
+            df: input DataFrame object
+
+            col_name: name of the target column (string)
+        '''
+
+        self.data =self.data.withColumn(col_name, df[col_name].cast(DoubleType()))
+
+
+    def featurize(df, col_name, option, skip=False):
+        '''
+        featurize a specific numerical feature
+
+        Args:
+            df: input DataFrame object
+            col_name: name of the target feature (string)
+            option: featurization option (int), 1 for Standarization, 2 for L2-Normalization, 3 for Min-Max transformation
+            skip: whether skip a non-numerical feature, default False
+        '''
+        def ith_(v, i):
+            '''
+            helper function
+            '''
+            try:
+                return float(v[i])
+            except ValueError:
+                return None
+        if not isinstance(col_name, str):
+            raise TypeError('column name must be a string object. your input type is {}'.format(type(col_name)))
+        if isinstance(option, int):
+            options = [1,2,3]
+            if option not in options:
+                raise ValueError("option should be 1(Standarization), 2(L2-Normalization) or 3(Min-Max), your input is: {}".format(option))
+        else:
+            raise TypeError('option must be an int object. your input type is {}'.format(type(option)))
+
+        temp = df.select(col_name)
+        types = [f.dataType for f in temp.schema.fields]
+        type_list = ["IntegerType","LongType","DoubleType"]
+        if str(types[0]) not in type_list:
+            if not skip:
+                raise TypeError('The column you try to featurize is {}, which is not a valid data type for this function. You may mant to use function to_double() to cast the column first '.format(types[0]))
+            else:
+                warnings.warn("you are skipping a non-numerical feature!")
+
+        if option == 1:
+            df_stats = df.select(F.mean(F.col(col_name)).alias('mean'),
+                                 F.stddev(F.col(col_name)).alias('std')).collect()
+            mean = df_stats[0]['mean']
+            std = df_stats[0]['std']
+            data = df.withColumn(col_name, (df[col_name] - mean)/std)
+            data_stats = data.select(F.mean(F.col(col_name)).alias('mean'),
+                                 F.stddev(F.col(col_name)).alias('std')).collect()
+            new_mean = data_stats[0]['mean']
+            new_std = data_stats[0]['std']
+            print("Standarization on {} is successful!".format(col_name))
+            print("new mean: {}, new std: {}".format(new_mean, new_std))
+
+        elif option == 2:
+            assembler = VectorAssembler(inputCols=[col_name], outputCol="feature")
+            assembled = assembler.transform(df)
+            normalizer = Normalizer(inputCol="feature", outputCol="l2normFeature")
+            l2NormData = normalizer.transform(assembled).drop("feature").drop(col_name)
+            data = l2NormData.withColumnRenamed("l2normFeature", col_name)
+            print("L2-Normalization on {} is successful!".format(col_name))
+            ith = F.udf(ith_, DoubleType())
+            data = data.withColumn(col_name, ith(col_name, F.lit(0)))
+
+        elif option == 3:
+            col_max = df.agg({col_name: "max"}).collect()[0][0]
+            col_min = df.agg({col_name: "min"}).collect()[0][0]
+            data = df.withColumn(col_name, (df[col_name] - col_min)/(col_max-col_min))
+            new_max = data.agg({col_name: "max"}).collect()[0][0]
+            new_min = data.agg({col_name: "min"}).collect()[0][0]
+            print("Min-Max Transformation on {} is successful!".format(col_name))
+            print("new lower bound: {}, new upper bound: {}".format(new_min, new_max))
+
+        self.data = data
+
+    def featurize_all(df, option):
+        '''
+        featurize the whole DataFrame object
+
+        Args:
+            df: input DataFrame object
+            option: featurization option (int), 1 for Standarization, 2 for L2-Normalization, 3 for Min-Max transformation
+
+        '''
+        for i in df.columns:
+            temp = df.select(i)
+            types = [f.dataType for f in temp.schema.fields]
+            type_list = ["IntegerType","LongType","DoubleType"]
+            if str(types[0]) not in type_list:
+                warnings.warn("The column ({}) you try to featurize is {}, which is not a valid data type for this function. We skip it for you at this point".format(i, types[0]))
+                continue
+            df = featurize(df, i, option, False)
+
+        data = df
+        self.data = data
+
+
+
+
+    def outlier_detect(self.data, col_name, error = 0.1):
+        '''
+        detect outliers of a numerical feature based on IQR rule
+
+        Args:
+            df: input DataFrame object
+            col_name: name of the target feature (string)
+            error: the relative target precision to achieve, default is 0.1
+        Return:
+            DataFrame without possible outliers
+        '''
+        if not isinstance(col_name, str):
+            raise TypeError('column name must be a string object. your input type is {}'.format(type(col_name)))
+        try:
+            self.data = self.data.withColumn(col_name, self.data[col_name].cast(DoubleType()))
+        except:
+            pass
+
+        initial_count = self.data.count()
+        quantiles = self.data.approxQuantile(col_name,[0.25, 0.75], error)
+        IQR = quantiles[1] - quantiles[0]
+        low_ = quantiles[0] - 1.5*IQR
+        high_ = quantiles[1] + 1.5*IQR
+
+        new_df = self.data.where((self.data[col_name] < low_ ) | (self.data[col_name] > high_ ))
+        new_count = new_df.count()
+
+        print("Outlier detection on {} finished!".format(col_name))
+        print("There are {} instances in {}, we detect {} possible outliers, shown below:".format(initial_count, col_name, new_count))
+
+        new_df.select(col_name).show()
+
+        return self.data.where((self.data[col_name] >= low_ ) | (self.data[col_name] <= high_ ))
+
+    def distinguish_numerical_formats(self.data):
+        '''
+        provide our estimation of data type (whether numerical) of each feature
+        that may be different from the default input type
+
+        Args:
+            df: input DataFrame object
+        '''
+        print("The original data types of each feature are:")
+        print(self.data.dtypes)
+
+        for i in range(len(self.data.columns)):
+            col_name = self.data.dtypes[i][0]
+            sample = self.data.select(col_name).limit(10)
+            last = sample.select(col_name).orderBy(sample[col_name].desc()).limit(1)
+            try:
+                int(sample.first()[0])
+                int(last.first()[0])
+                print("We think {} is a numerical type".format(col_name))
+            except:
+                print("We think {} is not a numerical type".format(col_name))
+
+
+
+
+
+    def anomaly_detection_by_KMeans(columns,k=3,threshold=4,normalize=False):
+        def error(point):
+            center = clusters.centers[clusters.predict(point)]
+            return sqrt(sum([x**2 for x in (point-center)]))
+
+        def addclustercols(x):
+            point = np.array(x[1:])
+            center = clusters.centers[0]
+            mindist = sqrt(sum([y**2 for y in (point-center)]))
+            cl = 0
+            for i in range(1,len(clusters.centers)):
+                center = clusters.centers[i]
+                distance = sqrt(sum([y**2 for y in (point-center)]))
+                if distance < mindist:
+                    cl = i
+                    mindist = distance
+            clcenter = clusters.centers[cl]
+            #return [x[0]]+list(clcenter) + [distance]
+            result = list(clcenter) + [distance]
+            return [x[0],cl]+[float(x) for x in result]
+
+        def featurize(df, col_name):
+            df_stats = df.select(F.mean(F.col(col_name)).alias('mean'),
+                                   F.stddev(F.col(col_name)).alias('std')).collect()
+            mean = df_stats[0]['mean']
+            std = df_stats[0]['std']
+            data = df.withColumn(col_name, (df[col_name] - mean)/std)
+            data_stats = data.select(F.mean(F.col(col_name)).alias('mean'),
+                                     F.stddev(F.col(col_name)).alias('std')).collect()
+            new_mean = data_stats[0]['mean']
+            new_std = data_stats[0]['std']
+            return data
+        def featurize_all(df, columns):
+            for i in columns:
+                df = featurize(df, i)
+            data = df
+            return data
+
+
+
+        data = self.data
+        if 'index' not in data.columns:
+            print('Please create index first')
+        new_cols_len = len(columns)
+        number_type = ["BinaryType" "DecimalType", "DoubleType", "FloatType", "IntegerType","LongType", "ShortType"]
+        all_number_type = True
+        new_columns_name = ['index','cluster_number']
+        for column in columns:
+            if column in data.columns:
+                all_number_type = (str(data.schema[column].dataType)) and (all_number_type)
+                if not all_number_type:
+                    print('The type of'+column+" is "+str(data.schema["_c6"].dataType))
+                    print("Only numerical type is accepted ")
+                    return None,None
+                else:
+                    new_columns_name.append(column+"_cluster")
+            else:
+                print(column,"doesn't exist")
+                return None,None
+        new_columns_name.append('distance_to_cluster')
+        origin_data = data.cache()
+        data = data.select(['index']+columns)
+        data = data.dropna()
+        if normalize:
+            data = featurize_all(data,columns)
+
+        target_numpy = data.select(columns).rdd.map(lambda x : np.array(x))
+        clusters = KMeans.train(target_numpy, k, maxIterations=20)
+        result_data = data.rdd.map(lambda x: addclustercols(x)).toDF(new_columns_name)
+        full_data = origin_data.join(result_data,'index',how='inner')
+        stat = full_data.groupBy('cluster_number').agg(F.mean('distance_to_cluster').alias('distance_mean'),F.stddev('distance_to_cluster').alias('distance_std'))
+        anomaly_data = full_data.join(stat,'cluster_number','inner').rdd.filter(lambda x : x['distance_to_cluster']>(x['distance_mean']+threshold*x['distance_std']))
+        try:
+            anomaly_data = anomaly_data.toDF()
+            anomaly_indices = anomaly_data.select('index')
+        except:
+            print("None anomaly data based on your setting")
+            return None,None
+        else:
+            return [int(i['index']) for i in anomaly_indices.collect()],anomaly_data
+
+
+
+    def train_test_split(weights,seed=None):
+        if isinstance(weights,list):
+            return self.data.randomSplit(weights, seed=seed)
+        else:
+            print('weights should be list')
+            return None,None
