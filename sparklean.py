@@ -7,15 +7,19 @@ from pyspark.sql import SQLContext
 from pyspark.sql.functions import *
 from pyspark.ml.feature import NGram
 from pyspark.ml.feature import MinHashLSH
+from pyspark.mllib.clustering import KMeans, KMeansModel
+
 from pyspark.ml.linalg import Vectors
 from pyspark.sql.functions import col
 from pyspark.ml.feature import CountVectorizer
 import string
+import numpy as np
+import warnings
 from pyspark.ml.linalg import Vectors
 from pyspark.sql.types import DoubleType
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.feature import StandardScaler
-
+from pyspark.ml.feature import Normalizer
 class cleaner():
     def __init__(self,data,save_dir,sparkcontext=None):
         '''
@@ -251,6 +255,11 @@ class cleaner():
         self.data = data
         return
     def remove_by_index(self,index):
+        """
+        Remove rows by looking at index
+
+        index: given index to remove
+        """
         df = self.data
         if 'index' in df.columns:
             pass
@@ -292,6 +301,8 @@ class cleaner():
 
     def remove_by_column_and_value(self,column,values):
         '''
+        Remove rows by looking at column index and value
+
         df : dataframe
         column: str
         values: number/string
@@ -319,6 +330,9 @@ class cleaner():
         print('The number of rows removed : {}'.format(num_before_remove-num_after_remove))
         return
     def dropDuplicateColumn(self):
+        """
+        Detect and drop duplicated features
+        """
         df = self.data
         i = 0
         df.createOrReplaceTempView("df")
@@ -386,6 +400,9 @@ class cleaner():
         self.data =df
         return
     def dropColumnWithAllTheSameValues(self):
+        """
+        Drop columns with only one unique element
+        """
         df = self.data
         df.createOrReplaceTempView("df")
         for col in df.columns:
@@ -400,7 +417,7 @@ class cleaner():
                 target_value = first_set.pop()
                 num_of_row_with_same_value = self.ss.sql("select * from df where {} = '{}'".format(col,target_value)).count()
                 if num_of_row_with_same_value == df.count():
-                    option = input("Colume {} has the same value for all cells, do you want to drop it?\n\
+                    option = input("Column {} has the same value for all cells, do you want to drop it?\n\
                     Press 1 to drop it, press 2 or other to keep it")
                     if option == '1':
                         print('The column',col,'will be dropped')
@@ -418,7 +435,15 @@ class cleaner():
         return
 
     def get_similar_word(self, column, text, n_words=10, n_hash=5,verbose=True):
+        """
+        Get similar strings in a column by MinHash
 
+        target_col: target column to search
+        text: input string
+        n_words: number of similar strings
+        n_hash: number of hash functions for MinHash
+        verbose:True if you want to see interactive output
+        """
         rdd = self.data.rdd
         rdd=rdd.filter(lambda row:row[column] != None)
         rdd=rdd.filter(lambda row:row[column] != "" )
@@ -464,7 +489,16 @@ class cleaner():
         return
 
     def clean_strings_removing(self, target_col,rename_to='',punc=True,number=True,others='',verbose=True):
+        """
+        Clean string by removing certain characters.
 
+        target_col: target column to clean
+        rename_to: assign it if you want to rename the column
+        number: True if you do not want to keep digits
+        punc: True if you do not want to keep punctuations
+        others: A string contains other characters you want to remove
+        verbose:True if you want to see interactive output
+        """
         new_name='nn'
         bad_charac=punc*'!."#$%&\()*+,-/:;<=>?@[\\]^_`{|}~'+number*'1234567890'+others
         if verbose:
@@ -504,6 +538,17 @@ class cleaner():
         return
 
     def clean_strings_keeping(self, target_col,rename_to='',char=True,number=True,punc=True,space=True,verbose=True):
+        """
+        Clean string by keeping certain characters.
+
+        target_col: target column to clean
+        rename_to: assign it if you want to rename the column
+        char: True if you want to keep english characters
+        number: True if you want to keep digits
+        punc: True if you want to keep punctuations
+        space: True if you want to keep space
+        verbose:True if you want to see interactive output
+        """
         new_name='cleaned'
 
         SafeSet=char*string.ascii_letters+string.punctuation*punc+string.digits*number+space*' '
@@ -555,10 +600,10 @@ class cleaner():
             col_name: name of the target column (string)
         '''
 
-        self.data =self.data.withColumn(col_name, df[col_name].cast(DoubleType()))
+        self.data =self.data.withColumn(col_name, self.data[col_name].cast(DoubleType()))
 
 
-    def featurize(df, col_name, option, skip=False):
+    def featurize(self, col_name, option, skip=False):
         '''
         featurize a specific numerical feature
 
@@ -568,6 +613,11 @@ class cleaner():
             option: featurization option (int), 1 for Standarization, 2 for L2-Normalization, 3 for Min-Max transformation
             skip: whether skip a non-numerical feature, default False
         '''
+        n_null=self.data.where(self.data[col_name].isNull()).count()
+        if n_null>0:
+            print("Drop {} null values in {}!".format(n_null, col_name))
+            self.data=self.data.dropna()
+
         def ith_(v, i):
             '''
             helper function
@@ -584,7 +634,7 @@ class cleaner():
                 raise ValueError("option should be 1(Standarization), 2(L2-Normalization) or 3(Min-Max), your input is: {}".format(option))
         else:
             raise TypeError('option must be an int object. your input type is {}'.format(type(option)))
-
+        df=self.data
         temp = df.select(col_name)
         types = [f.dataType for f in temp.schema.fields]
         type_list = ["IntegerType","LongType","DoubleType"]
@@ -628,7 +678,7 @@ class cleaner():
 
         self.data = data
 
-    def featurize_all(df, option):
+    def featurize_all(self, option):
         '''
         featurize the whole DataFrame object
 
@@ -637,22 +687,24 @@ class cleaner():
             option: featurization option (int), 1 for Standarization, 2 for L2-Normalization, 3 for Min-Max transformation
 
         '''
+        df=self.data
         for i in df.columns:
+
             temp = df.select(i)
             types = [f.dataType for f in temp.schema.fields]
             type_list = ["IntegerType","LongType","DoubleType"]
             if str(types[0]) not in type_list:
                 warnings.warn("The column ({}) you try to featurize is {}, which is not a valid data type for this function. We skip it for you at this point".format(i, types[0]))
                 continue
-            df = featurize(df, i, option, False)
-
-        data = df
-        self.data = data
+            self.featurize(i, option, False)
 
 
 
 
-    def outlier_detect(self.data, col_name, error = 0.1):
+
+
+
+    def outlier_detect(self, col_name, error = 0.1):
         '''
         detect outliers of a numerical feature based on IQR rule
 
@@ -686,7 +738,7 @@ class cleaner():
 
         return self.data.where((self.data[col_name] >= low_ ) | (self.data[col_name] <= high_ ))
 
-    def distinguish_numerical_formats(self.data):
+    def distinguish_numerical_formats(self):
         '''
         provide our estimation of data type (whether numerical) of each feature
         that may be different from the default input type
@@ -712,7 +764,15 @@ class cleaner():
 
 
 
-    def anomaly_detection_by_KMeans(columns,k=3,threshold=4,normalize=False):
+    def anomaly_detection_by_KMeans(self,columns,k=3,threshold=4,normalize=False):
+        """
+        Anomaly detection with Kmeans
+
+        columns: Target columns name, list of string
+        k: K-value for K-Means, int
+        threshold:
+        normalize: whether normalize the input
+        """
         def error(point):
             center = clusters.centers[clusters.predict(point)]
             return sqrt(sum([x**2 for x in (point-center)]))
@@ -761,7 +821,7 @@ class cleaner():
         new_columns_name = ['index','cluster_number']
         for column in columns:
             if column in data.columns:
-                all_number_type = (str(data.schema[column].dataType)) and (all_number_type)
+                all_number_type = (str(data.schema[column].dataType) in number_type) and (all_number_type)
                 if not all_number_type:
                     print('The type of'+column+" is "+str(data.schema["_c6"].dataType))
                     print("Only numerical type is accepted ")
@@ -777,9 +837,11 @@ class cleaner():
         data = data.dropna()
         if normalize:
             data = featurize_all(data,columns)
-
+        data.show()
         target_numpy = data.select(columns).rdd.map(lambda x : np.array(x))
         clusters = KMeans.train(target_numpy, k, maxIterations=20)
+        self.ss.createDataFrame(data.rdd.map(lambda x: addclustercols(x))).show()
+
         result_data = data.rdd.map(lambda x: addclustercols(x)).toDF(new_columns_name)
         full_data = origin_data.join(result_data,'index',how='inner')
         stat = full_data.groupBy('cluster_number').agg(F.mean('distance_to_cluster').alias('distance_mean'),F.stddev('distance_to_cluster').alias('distance_std'))
@@ -796,6 +858,10 @@ class cleaner():
 
 
     def train_test_split(weights,seed=None):
+        """
+        Test Train split
+        weights: weights for splits, will be normalized if they don’t sum to 1
+        """
         if isinstance(weights,list):
             return self.data.randomSplit(weights, seed=seed)
         else:
